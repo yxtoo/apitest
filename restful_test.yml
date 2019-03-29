@@ -1,0 +1,8 @@
+# project app name, eg: skyeyeapi
+appName: java_test
+
+# project app url prefix, eg: "/skyeyeapi/v2" for python, null for java
+appBaseUrl:
+
+# project app host, the format is host:port or domain, eg: http://10.10.10.127:9000 or http://www.yxt.com
+appUrl: http://127.0.0.1:8080
