@@ -8,10 +8,14 @@ import pycurl
 import json
 import csv
 import logging
+import requests
+from timeit import default_timer
 from optparse import OptionParser
 from email import message_from_string  # For headers handling
+from logs import logger
 import time
-
+import gzip
+import io
 try:
     from cStringIO import StringIO as MyIO
 except:
@@ -76,8 +80,8 @@ LOGGING_LEVELS = {'debug': logging.DEBUG,
                   'error': logging.ERROR,
                   'critical': logging.CRITICAL}
 
-logging.basicConfig(format='%(levelname)s:%(message)s')
-logger = logging.getLogger('pyresttest')
+# logging.basicConfig(format='%(levelname)s:%(message)s')
+# logger = logging.getLogger('pyresttest')
 
 
 class cd:
@@ -609,10 +613,50 @@ OUTPUT_METHODS = {u'csv': write_benchmark_csv, u'json': write_benchmark_json}
 
 def log_failure(failure, context=None, test_config=TestConfig()):
     """ Log a failure from a test """
+    # 在这里把测试异常的报错信息组装
+    test_failure_msg = dict()
+    test_failure_msg["msg"] = "Test Failure, failure type: {0}, Reason: {1}".format(
+        failure.failure_type, failure.message)
     logger.error("Test Failure, failure type: {0}, Reason: {1}".format(
         failure.failure_type, failure.message))
     if failure.details:
+        test_failure_msg["validator_msg"] = "Validator/Error details:" + str(failure.details)
         logger.error("Validator/Error details:" + str(failure.details))
+    return test_failure_msg
+
+
+def parse_failure(result):
+    """Parse the test failure and send it to dingding"""
+    test_failure_result = dict()
+    test_failure_result["url"] = result.test.url
+    test_failure_result["method"] = result.test.method
+    test_failure_result["param"] = result.test.body
+    test_failure_result["status_code"] = result.response_code
+    return test_failure_result
+
+
+def parse_correct(group_results, test_results):
+    """Parse the correct test time and send it to dingding"""
+    for test_response in group_results:
+        if hasattr(test_response, "test") and hasattr(test_response, "time"):
+            _test = test_response.test
+            if hasattr(_test, "url") and hasattr(_test, "method"):
+                test_results.setdefault("correct", []).append({
+                    "url": _test.url,
+                    "method": _test.method,
+                    "param": _test.body,
+                    "duration": test_response.time,
+                })
+
+
+def gzip_compression_body(data):
+    if not data:
+        return None
+    gz_buffer = io.BytesIO()
+    gzip_file = gzip.GzipFile(fileobj=gz_buffer, mode="wb")
+    gzip_file.write(json.dumps(data).encode("utf-8"))
+    gzip_file.close()
+    return gz_buffer.getvalue()
 
 
 def run_testsets(testsets):
@@ -622,6 +666,7 @@ def run_testsets(testsets):
     total_failures = 0
     myinteractive = False
     curl_handle = pycurl.Curl()
+    test_results = dict()
 
     for testset in testsets:
         mytests = testset.tests
@@ -651,19 +696,24 @@ def run_testsets(testsets):
                 group_results[test.group] = list()
                 group_failure_counts[test.group] = 0
 
+            # set request start time
+            request_start_time = default_timer()
             result = run_test(test, test_config=myconfig, context=context, curl_handle=curl_handle)
             result.body = None  # Remove the body, save some memory!
-
             if not result.passed:  # Print failure, increase failure counts for that test group
                 # Use result test URL to allow for templating
                 logger.error('Test Failed: ' + test.name + " URL=" + result.test.url +
                              " Group=" + test.group + " HTTP Status Code: " + str(result.response_code))
+                # 对错误的响应进行处理
+                test_failure_result = parse_failure(result)
 
                 # Print test failure reasons
                 if result.failures:
                     for failure in result.failures:
-                        log_failure(failure, context=context,
+                        test_failure_msg = log_failure(failure, context=context,
                                     test_config=myconfig)
+                        test_failure_result.update(test_failure_msg)
+                test_results.setdefault("failure", []).append(test_failure_result)
 
                 # Increment test failure counts for that group (adding an entry
                 # if not present)
@@ -672,6 +722,8 @@ def run_testsets(testsets):
                 group_failure_counts[test.group] = failures
 
             else:  # Test passed, print results
+                # set response end time, and calculate the time difference, unit: second
+                result.time = max(default_timer() - request_start_time, 0)
                 logger.info('Test Succeeded: ' + test.name +
                             " URL=" + test.url + " Group=" + test.group)
 
@@ -718,6 +770,9 @@ def run_testsets(testsets):
         failures = group_failure_counts[group]
         total_failures = total_failures + failures
 
+        # 对正确的响应进行处理
+        parse_correct(group_results[group], test_results)
+
         passfail = {True: u'SUCCEEDED: ', False: u'FAILED: '}
         output_string = "Test Group {0} {1}: {2}/{3} Tests Passed!".format(group, passfail[failures == 0], str(test_count - failures), str(test_count)) 
         
@@ -725,11 +780,11 @@ def run_testsets(testsets):
             print(output_string)    
         else:
             if failures > 0:
-                print('\033[91m' + output_string + '\033[0m')
+                print("\033[91m" + output_string + "\033[0m")
             else:
-                print('\033[92m' + output_string + '\033[0m')
+                print("\033[92m" + output_string + "\033[0m")
 
-    return total_failures
+    return test_results
 
 
 def register_extensions(modules):
@@ -850,9 +905,10 @@ def main(args):
             t.config.skip_term_colors = safe_to_bool(args['skip_term_colors'])
 
     # Execute all testsets
-    failures = run_testsets(tests)
+    # failures = run_testsets(tests)
+    return run_testsets(tests)
 
-    sys.exit(failures)
+    # sys.exit(failures)
 
 
 def parse_command_line_args(args_in):
@@ -914,6 +970,7 @@ def command_line_run(args_in=None, base_url=None, test_file=None):
         main(args_dict)
     args = parse_command_line_args(args_in)
     main(args)
+
 
 # Allow import into another module without executing the main method
 if(__name__ == '__main__'):

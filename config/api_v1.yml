@@ -1,0 +1,7 @@
+#  define the parameters needed to access the api
+
+# url
+/test/test:
+  # Variable reference required parameter
+  param1: "test"
+  param2: "test"

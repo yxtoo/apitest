@@ -1,0 +1,12 @@
+{{ num }} .URL: {{ url_root }}
+Total: {{ total }}
+Success: {{ success }}
+Failed: {{ failed }}
+    {% for f_case in failed_list if failed_list -%}
+     {{ loop.index }}. {{ f_case.url }}
+    {% endfor %}
+Top Low:
+    {% for d_case in case_duration_top10 -%}
+    {{ (loop.index) }}. {{ d_case.url}}: {{ d_case.time }}ms
+    {% endfor %}
+{{ wrap }}
